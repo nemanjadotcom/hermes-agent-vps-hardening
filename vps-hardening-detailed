@@ -1,0 +1,501 @@
+# VPS Hardening Guide (Ubuntu + Hetzner + Tailscale)
+
+## Goal
+
+This guide creates a hardened Ubuntu VPS with:
+
+- SSH keys only
+- No public SSH exposure
+- Tailscale-only SSH access
+- Non-root administration
+- Firewall protection
+- Fail2ban protection
+- Reusable hardened VPS template
+
+---
+
+# Step 1 — Create VPS
+
+Recommended:
+
+- Ubuntu 24.04 LTS
+- Hetzner Cloud
+- Add SSH public key during server creation
+
+Recommended specs:
+
+## Basic VPS
+
+- 2 vCPU
+- 4 GB RAM
+- 40–80 GB SSD
+
+## Larger VPS
+
+- 4–8 vCPU
+- 8–16 GB RAM
+
+---
+
+# Step 2 — Login As Root
+
+```bash
+ssh root@SERVER_PUBLIC_IP
+```
+
+Update server:
+
+```bash
+apt update && apt upgrade -y
+```
+
+Optional reboot:
+
+```bash
+reboot
+```
+
+---
+
+# Step 3 — Create Non-Root User
+
+Replace `YOUR_USERNAME` with your username.
+
+```bash
+adduser YOUR_USERNAME
+usermod -aG sudo YOUR_USERNAME
+```
+
+Verify sudo access:
+
+```bash
+id YOUR_USERNAME
+```
+
+Expected output should include:
+
+```text
+sudo
+```
+
+---
+
+# Step 4 — Copy SSH Keys To User
+
+```bash
+mkdir -p /home/YOUR_USERNAME/.ssh
+cp /root/.ssh/authorized_keys /home/YOUR_USERNAME/.ssh/
+chown -R YOUR_USERNAME:YOUR_USERNAME /home/YOUR_USERNAME/.ssh
+chmod 700 /home/YOUR_USERNAME/.ssh
+chmod 600 /home/YOUR_USERNAME/.ssh/authorized_keys
+```
+
+---
+
+# Step 5 — Verify SSH Key Authentication
+
+From local machine:
+
+```bash
+ssh YOUR_USERNAME@SERVER_PUBLIC_IP
+```
+
+This MUST work without password prompt.
+
+If it does not:
+
+Check server authorized_keys:
+
+```bash
+cat ~/.ssh/authorized_keys
+```
+
+Expected format:
+
+```text
+ssh-ed25519 AAAAC3Nza... yourname@MacBook
+```
+
+---
+
+# Step 6 — Install Tailscale
+
+On VPS:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+```
+
+Authenticate:
+
+```bash
+sudo tailscale up
+```
+
+Open the login URL in browser.
+
+---
+
+# Step 7 — Get Tailscale IP
+
+```bash
+tailscale ip -4
+```
+
+Example:
+
+```text
+100.79.137.69
+```
+
+---
+
+# Step 8 — Verify Tailscale SSH Access
+
+From local machine:
+
+```bash
+ssh YOUR_USERNAME@TAILSCALE_IP
+```
+
+Example:
+
+```bash
+ssh presswhizz@100.79.137.69
+```
+
+This MUST work before continuing.
+
+---
+
+# Step 9 — Configure Firewall (UFW)
+
+Install UFW if needed:
+
+```bash
+sudo apt install ufw -y
+```
+
+Configure firewall:
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow in on tailscale0
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+```
+
+Verify:
+
+```bash
+sudo ufw status verbose
+```
+
+Expected:
+
+```text
+Anywhere on tailscale0 ALLOW IN
+80/tcp ALLOW IN
+443/tcp ALLOW IN
+```
+
+---
+
+# Step 10 — Harden SSH Configuration
+
+Edit SSH config:
+
+```bash
+sudo nano /etc/ssh/sshd_config
+```
+
+Find or add these lines:
+
+```text
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+MaxAuthTries 3
+ClientAliveInterval 300
+ClientAliveCountMax 2
+```
+
+Save:
+
+```text
+CTRL + O
+ENTER
+CTRL + X
+```
+
+---
+
+# Step 11 — Restrict SSH To Tailscale Only
+
+Create socket override:
+
+```bash
+sudo mkdir -p /etc/systemd/system/ssh.socket.d
+sudo nano /etc/systemd/system/ssh.socket.d/listen.conf
+```
+
+Paste:
+
+```ini
+[Socket]
+ListenStream=
+ListenStream=TAILSCALE_IP:22
+```
+
+Example:
+
+```ini
+[Socket]
+ListenStream=
+ListenStream=100.79.137.69:22
+```
+
+Reload SSH:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ssh.socket
+sudo systemctl restart ssh
+```
+
+---
+
+# Step 12 — Verify Hardened SSH
+
+Open NEW terminal.
+
+Verify Tailscale access still works:
+
+```bash
+ssh YOUR_USERNAME@TAILSCALE_IP
+```
+
+Verify public SSH is dead:
+
+```bash
+ssh YOUR_USERNAME@SERVER_PUBLIC_IP
+```
+
+Expected:
+
+- Tailscale IP works
+- Public IP hangs or refuses connection
+
+This confirms SSH is no longer publicly exposed.
+
+---
+
+# Step 13 — Lock Root Account
+
+```bash
+sudo passwd -l root
+```
+
+This disables root password login.
+
+---
+
+# Step 14 — Install Fail2ban
+
+Install:
+
+```bash
+sudo apt install fail2ban -y
+```
+
+Enable:
+
+```bash
+sudo systemctl enable fail2ban
+sudo systemctl start fail2ban
+```
+
+Verify:
+
+```bash
+sudo fail2ban-client status
+```
+
+Expected:
+
+```text
+Jail list: sshd
+```
+
+---
+
+# Step 15 — Recommended Hetzner Cloud Firewall
+
+Allow:
+
+```text
+80
+443
+```
+
+Do NOT allow:
+
+```text
+22
+```
+
+SSH should only work through Tailscale.
+
+---
+
+# Step 16 — VS Code Remote SSH Setup
+
+Recommended SSH config:
+
+```text
+Host myserver
+    HostName 100.79.137.69
+    User YOUR_USERNAME
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+Connect:
+
+```bash
+ssh myserver
+```
+
+Or use VS Code Remote SSH.
+
+---
+
+# Step 17 — Snapshot Strategy
+
+After setup:
+
+Create VPS snapshot.
+
+Recommended name:
+
+```text
+ubuntu24-hardened-base
+```
+
+Benefits:
+
+- reusable secure templates
+- fast deployments
+- disaster recovery
+- consistent infrastructure
+
+---
+
+# Security Principles
+
+## Use Non-Root Users
+
+Operate through:
+
+```bash
+sudo
+```
+
+Never daily-drive root.
+
+---
+
+## Use SSH Keys Only
+
+Never enable password SSH authentication.
+
+---
+
+## Use Tailscale
+
+Instead of:
+
+```text
+Public Internet → SSH Port 22
+```
+
+You get:
+
+```text
+Private Mesh Network → SSH
+```
+
+Massively reduced attack surface.
+
+---
+
+## Snapshot Frequently
+
+Take snapshots before:
+
+- upgrades
+- Docker changes
+- dependency experiments
+
+---
+
+# Common Problems
+
+## Locked Out After Hardening
+
+Usually caused by:
+
+- wrong Tailscale IP
+- forgetting to verify Tailscale SSH first
+- incorrect socket binding
+
+Fix:
+
+- use Hetzner console
+- revert ssh.socket override
+
+---
+
+## VS Code Remote SSH Fails
+
+Usually caused by:
+
+- using public IP instead of Tailscale IP
+- local Tailscale disconnected
+
+Verify:
+
+```bash
+tailscale status
+```
+
+---
+
+## SSH Still Publicly Reachable
+
+Check:
+
+```bash
+sudo ss -tulpn | grep :22
+```
+
+Only Tailscale IP should be listening.
+
+---
+
+# Final Result
+
+You now have:
+
+- hardened Ubuntu VPS
+- private SSH-only access
+- no public SSH exposure
+- non-root administration
+- firewall protection
+- fail2ban protection
+- Tailscale networking
+- reusable secure VPS template
